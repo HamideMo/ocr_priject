@@ -1,0 +1,134 @@
+import os
+import subprocess
+import tempfile
+import streamlit as st
+import fitz  # pymupdf
+
+# === تنظیمات ===
+LANG = "fas+eng"
+
+# === سبک‌دهی راست‌چین ===
+st.markdown("""
+<style>
+    body, .stApp, .stMarkdown, .stText {
+        direction: rtl;
+        text-align: right;
+        font-family: 'Vazir', 'Tahoma', 'Arial', sans-serif;
+    }
+    .stButton>button {
+        width: 100%;
+        background-color: #4CAF50;
+        color: white;
+        border-radius: 8px;
+    }
+    .stDownloadButton>button {
+        background-color: #2196F3;
+        color: white;
+        border-radius: 6px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+def get_pdf_page_count(pdf_path: str) -> int:
+    try:
+        with fitz.open(pdf_path) as doc:
+            return len(doc)
+    except Exception as e:
+        st.warning(f"⚠️ نتوانست تعداد صفحات {os.path.basename(pdf_path)} را بخواند: {e}")
+        return 1  # حدس اولیه
+
+def run_ocr_with_progress(input_path: str, output_path: str, total_pages: int, status_placeholder):
+    command = [
+        "ocrmypdf",
+        "-l", LANG,
+        "--force-ocr",
+        "--verbose", "1",  # فعال‌کردن لاگ جزئی
+        input_path,
+        output_path,
+    ]
+
+    progress = 0
+    progress_bar = st.progress(0)
+    page_counter = st.empty()
+    page_counter.text(f"صفحهٔ پردازش‌شده: 0 از {total_pages}")
+
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+        )
+
+        for line in iter(process.stdout.readline, ""):
+            if "page" in line.lower() and ("processing" in line.lower() or "rendering" in line.lower()):
+                progress += 1
+                if progress <= total_pages:
+                    percent = int((progress / total_pages) * 100)
+                    progress_bar.progress(min(percent, 100))
+                    page_counter.text(f"صفحهٔ پردازش‌شده: {progress} از {total_pages}")
+                # else: ignore extra logs
+
+        process.wait()
+        progress_bar.progress(100)
+        page_counter.text(f"✅ پردازش کامل شد: {total_pages} صفحه")
+        return process.returncode == 0, ""
+
+    except Exception as e:
+        return False, str(e)
+
+# === UI ===
+st.set_page_config(page_title="تبدیل pdf به pdf قابل سرچ", layout="wide")
+st.title("🔍 تبدیل pdf تصویری به pdf قابل سرچ")
+st.markdown("فایل‌های PDF خود را آپلود کنید — پیشرفت پردازش صفحه‌به‌صفحه نمایش داده می‌شود.")
+
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/3050/3050307.png", width=80)
+    st.header("📤 آپلود فایل")
+    uploaded_files = st.file_uploader(
+        "فایل‌های PDF خود را انتخاب کنید",
+        type=["pdf"],
+        accept_multiple_files=True
+    )
+    st.markdown("---")
+    st.caption("✅ پشتیبانی از فارسی + انگلیسی\n\n📊 نمایش پیشرفت صفحه‌به‌صفحه")
+
+if not uploaded_files:
+    st.info("👈 لطفاً فایل‌های PDF را از نوار کناری آپلود کنید.")
+else:
+    results = []
+    for file in uploaded_files:
+        st.markdown(f"### پردازش: `{file.name}`")
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = os.path.join(temp_dir, file.name)
+            output_path = os.path.join(temp_dir, f"OCR_{file.name}")
+
+            with open(input_path, "wb") as f:
+                f.write(file.getbuffer())
+
+            total_pages = get_pdf_page_count(input_path)
+            st.caption(f"📄 تعداد صفحات: {total_pages}")
+
+            success, error = run_ocr_with_progress(input_path, output_path, total_pages, None)
+
+            if success and os.path.exists(output_path):
+                with open(output_path, "rb") as f:
+                    results.append((file.name, f.read()))
+                st.success(f"✅ `{file.name}` با موفقیت پردازش شد!")
+            else:
+                st.error(f"❌ خطا در پردازش `{file.name}`:\n```\n{error}\n```")
+
+    if results:
+        st.markdown("---")
+        st.subheader("📥 دانلود فایل‌های OCR شده")
+        for orig_name, pdf_bytes in results:
+            st.download_button(
+                label=f"⬇️ دانلود OCR_{orig_name}",
+                data=pdf_bytes,
+                file_name=f"OCR_{orig_name}",
+                mime="application/pdf"
+            )
+        st.balloons()
